@@ -341,6 +341,8 @@ class ComputeLoss:
 
         # targets
         if targets.shape[0] == 0:
+            print("HERE: targets.shape[0] = 0")
+            #sys.stop()
             gt = torch.zeros(pred_scores.shape[0], 0, 5, device=self.device)
         else:
             i = targets[:, 0]  # image index
@@ -405,12 +407,14 @@ class ComputeLoss:
         self.bs = pred_scores.size(0)
         self.num_max_boxes = true_bboxes.size(1)
 
-        if self.num_max_boxes == 0:
+        if self.num_max_boxes == 0:            
             device = true_bboxes.device
-            return (torch.full_like(pred_scores[..., 0], self.nc).to(device),
+            #HERE02 3 torch.Size([8, 52500]) torch.Size([8, 52500, 3])
+            #torch.Size([8, 52500, 4]) torch.Size([8, 52500, 3]) torch.Size([8, 52500])
+            return (#torch.full_like(pred_scores[..., 0], self.nc).to(device),
                     torch.zeros_like(pred_bboxes).to(device),
                     torch.zeros_like(pred_scores).to(device),
-                    torch.zeros_like(pred_scores[..., 0]).to(device),
+                    #torch.zeros_like(pred_scores[..., 0]).to(device),
                     torch.zeros_like(pred_scores[..., 0]).to(device))
 
         i = torch.zeros([2, self.bs, self.num_max_boxes], dtype=torch.long)
@@ -472,6 +476,9 @@ class ComputeLoss:
         norm_align_metric = (align_metric * pos_overlaps / (pos_align_metrics + self.eps)).amax(-2)
         norm_align_metric = norm_align_metric.unsqueeze(-1)
         target_scores = target_scores * norm_align_metric
+
+        #print("target_bboxes.shape, target_scores.shape, fg_mask.shape: ", target_bboxes.shape, target_scores.shape, fg_mask.shape)
+        #sys.stop()
 
         return target_bboxes, target_scores, fg_mask.bool()
 

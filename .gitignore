@@ -1,0 +1,19 @@
+# Ignore all .log files
+*.log
+
+# Ignore all .tmp files
+*.tmp
+
+# Ignore the node_modules directory
+weights/
+
+# Ignore OS-generated files
+.DS_Store
+
+# Ignore Python compiled files
+__pycache__/
+*.py[cod]
+
+# Ignore IDE/editor specific files
+.vscode/
+.idea/

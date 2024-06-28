@@ -7,23 +7,31 @@ import numpy
 import torch
 from PIL import Image
 from torch.utils import data
+import tqdm
 
 FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp'
 
 
 class Dataset(data.Dataset):
-    def __init__(self, filenames, input_size, params, augment):
+    def __init__(self, filenames, labels_path, data_root, save_dir, input_size, params, augment):
         self.params = params
         self.mosaic = augment
         self.augment = augment
         self.input_size = input_size
+        self.save_dir = save_dir
 
         # Read labels
-        cache = self.load_label(filenames)
+        cache = self.load_label(filenames, labels_path)
         labels, shapes = zip(*cache.values())
         self.labels = list(labels)
         self.shapes = numpy.array(shapes, dtype=numpy.float64)
         self.filenames = list(cache.keys())  # update
+        labels_inputs_temp_directory = self.filenames[0].split('/')[3]
+        inputs_temp_directory = data_root.split('/')[3]
+
+        self.filenames = [filename.replace(labels_inputs_temp_directory, inputs_temp_directory) for filename in self.filenames]
+        self.filenames = [filename.replace('input', 'work') for filename in self.filenames]
+
         self.n = len(shapes)  # number of samples
         self.indices = range(self.n)
         # Albumentations (optional, only used if package is installed)
@@ -186,12 +194,15 @@ class Dataset(data.Dataset):
         return torch.stack(samples, 0), torch.cat(targets, 0), shapes
 
     @staticmethod
-    def load_label(filenames):
-        path = f'{os.path.dirname(filenames[0])}.cache'
-        if os.path.exists(path):
-            return torch.load(path)
+    def load_label(filenames, labels_path):
+        if os.path.exists(labels_path):
+            return torch.load(labels_path)
         x = {}
-        for filename in filenames:
+
+        filenames_loader = enumerate(filenames)
+        p_bar = tqdm.tqdm(filenames_loader, total=len(filenames))  # progress bar
+
+        for index, filename in p_bar:
             try:
                 # verify images
                 with open(filename, 'rb') as f:
@@ -202,10 +213,13 @@ class Dataset(data.Dataset):
                 assert image.format.lower() in FORMATS, f'invalid image format {image.format}'
 
                 # verify labels
-                a = f'{os.sep}images{os.sep}'
+                a = f'{os.sep}samples{os.sep}'
                 b = f'{os.sep}labels{os.sep}'
-                if os.path.isfile(b.join(filename.rsplit(a, 1)).rsplit('.', 1)[0] + '.txt'):
-                    with open(b.join(filename.rsplit(a, 1)).rsplit('.', 1)[0] + '.txt') as f:
+                splits = filename.rsplit(a, 1)
+                txt_filename = splits[1].rsplit('/', 1)[1].rsplit('.', 1)[0] + '.txt'                
+                txt_filepath = splits[0]+ b + txt_filename
+                if os.path.isfile(txt_filepath):
+                    with open(txt_filepath) as f:
                         label = [x.split() for x in f.read().strip().splitlines() if len(x)]
                         label = numpy.array(label, dtype=numpy.float32)
                     nl = len(label)
@@ -224,9 +238,36 @@ class Dataset(data.Dataset):
                     x[filename] = [label, shape]
             except FileNotFoundError:
                 pass
-        torch.save(x, path)
+        torch.save(x, labels_path)
         return x
 
+
+def save_image_with_boxes(save_dir, image, labels, detections, index):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    
+    labels_copy = labels.clone().cpu().numpy()
+    detections_copy = detections.clone().cpu().numpy()
+
+    img = image.copy()
+
+    labels_copy[:, 1:] = wh2xy(labels_copy[:, 1:], 1, 1, 0, 0)
+    # Draw bounding boxes
+    for l in labels_copy:
+        class_id, x1, y1, x2, y2 = map(int, l)
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(img, str(int(class_id)), (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36,255,12), 2)
+
+    for det in detections_copy:
+        x1, y1, x2, y2 = map(int, det[:4])
+        class_id = int(det[5])
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+        cv2.putText(img, f"DB: {int(class_id)}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36,255,12), 2)
+
+    # Save image
+    save_path = os.path.join(save_dir, f"image_{index}.jpg")
+    cv2.imwrite(save_path, img)
 
 def wh2xy(x, w=640, h=640, pad_w=0, pad_h=0):
     # Convert nx4 boxes
