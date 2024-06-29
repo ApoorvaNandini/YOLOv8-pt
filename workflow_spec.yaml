@@ -1,0 +1,60 @@
+version: 2
+name: asaridena-yolo-v8-trainval-8gpus-boston-jun29
+tags:
+  cost-center: av_ndas_ppo-research
+tasks:
+- name: 1.train-and-eval
+  inputs:
+  - volume:
+      name: kpi-datasets-nuScenes
+      version: latest
+    selector: '(v1.0-trainval)/*'
+  - workflow: asaridena-nuscenes-generate-labels-boston
+    run: 2024.06.17-1819-2djx70ht7adbg
+    task: 1.train-and-eval
+    prefix: train-labels
+  - workflow: asaridena-nuscenes-generate-labels-boston
+    run: 2024.06.17-1819-2djx70ht7adbg
+    task: 1.train-and-eval
+    prefix: val-labels
+  - workflow: asaridena-yolo-v8-nuscenes-trainval-full
+    run: 2024.06.05-2125-34igplk21k0ki
+    task: 1.train-and-eval
+    prefix: pre-trained-model
+  image: nvcr.io/nv-maglev/dlav/data-scaling-across-domains-yolo-v8:01@sha256:567006831881d5ffde5bc975028f99d99116d15e21c82004adac149ef6d6a854
+  command: bash
+  args:
+  - -euxo
+  - pipefail
+  - -c
+  - |-
+    mkdir -p {{work}}/v1.0-trainval
+    mkdir -p {{work}}/train-labels
+    mkdir -p {{work}}/val-labels
+    rclone copy {{input}}/v1.0-trainval {{work}}/v1.0-trainval/ --transfers=1024 --exclude="**/.~lock.*"
+    rclone copy {{input}}/train-labels {{work}}/train-labels/ --transfers=1024 --exclude="**/.~lock.*"
+    rclone copy {{input}}/val-labels {{work}}/val-labels/ --transfers=1024 --exclude="**/.~lock.*"
+    ./main.sh 8 29500 --batch-size 8 --epochs 4 --city "boston" --dataset-name "v1.0-trainval" --input-path "{{work}}" --output-path "{{output}}/weights" --load-labels --train --test
+  fail: never
+  cache: success
+  jobConcurrency: 1
+  workerPool: yolo-training-wp
+  scratch:
+  - url: nfs://scratch.avperception
+    prefix: avperception
+    mode: readwrite
+  allowCacheScratch: true
+  group: all
+workerPools:
+- name: yolo-training-wp
+  workers: 1
+  cpu: "256"
+  gpu: "8"
+  mem: 800Gi
+  disk: 800Gi
+  resourceShare: genpop-pdx
+  nodeConstraints:
+    required:
+      nodeType: dgxa100.80gb.perf
+retentionPolicy:
+  default: 30d

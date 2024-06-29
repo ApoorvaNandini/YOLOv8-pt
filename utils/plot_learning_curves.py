@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 def plot_mAP(exp_dir, results_file, total_epochs=500):
 
     # Load data from CSV
-    data = pd.read_csv(exp_dir + results_file)
+    results_file_path = os.path.join(exp_dir, results_file)
+    data = pd.read_csv(results_file_path)
 
     # Extracting columns
     epochs = data['epoch']

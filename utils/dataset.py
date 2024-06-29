@@ -13,12 +13,11 @@ FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp'
 
 
 class Dataset(data.Dataset):
-    def __init__(self, filenames, labels_path, data_root, save_dir, input_size, params, augment):
+    def __init__(self, filenames, labels_path, data_root, input_size, params, augment):
         self.params = params
         self.mosaic = augment
         self.augment = augment
         self.input_size = input_size
-        self.save_dir = save_dir
 
         # Read labels
         cache = self.load_label(filenames, labels_path)

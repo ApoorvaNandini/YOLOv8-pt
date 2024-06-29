@@ -14,8 +14,6 @@ from nets import nn
 from utils import util, plot_learning_curves
 from utils.dataset import Dataset, save_image_with_boxes
 
-#from maglev.workflows.tasks import current_task
-
 warnings.filterwarnings("ignore")
 
 
@@ -44,14 +42,14 @@ def get_model_size(model):
 def train(
     args,
     params,
-    data_root="/home/asaridena/yolo-v8/v1.0-mini/",
-    annotations_file_path="/home/asaridena/yolo-v8/v1.0-mini/v1.0-mini/image_annotations_boston_train_p9.csv",
-    labels_path="/home/asaridena/yolo-v8/v1.0-mini/samples/boston_train_p9_labels.cache",
-    val_annotations_file_path="/home/asaridena/yolo-v8/v1.0-mini/v1.0-mini/image_annotations_boston_val_p1.csv",
-    val_labels_path="/home/asaridena/yolo-v8/v1.0-mini/samples/boston_val_p1_labels.cache",
-    output_path="/home/asaridena/yolo-v8/YOLOv8-pt/weights/",
-    train_images_save_dir="/home/asaridena/yolo-v8/YOLOv8-pt/weights/train-images/",
-    val_images_save_dir="/home/asaridena/yolo-v8/YOLOv8-pt/weights/val-images/",
+    data_root,
+    annotations_file_path,
+    labels_path,
+    val_annotations_file_path,
+    val_labels_path,
+    output_path,
+    train_images_save_dir,
+    val_images_save_dir,
 ):
     # Model
     model = nn.yolo_v8_n(len(params['names'].values())).cuda()
@@ -84,13 +82,13 @@ def train(
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr, last_epoch=-1)
 
     # EMA
-    ema = util.EMA(model) if args.local_rank == 0 else None
+    ema = util.EMA(model)
 
     filenames = []
     with open(annotations_file_path, 'r') as file:
         csv_reader = csv.DictReader(file)
         for row in csv_reader:
-            filenames.append(data_root + row['filename'])
+            filenames.append(os.path.join(data_root, row['filename']))
 
     dataset = Dataset(filenames, labels_path, data_root, None, args.input_size, params, True)
 
@@ -115,12 +113,13 @@ def train(
     amp_scale = torch.cuda.amp.GradScaler()
     criterion = util.ComputeLoss(model, params)
     num_warmup = max(round(params['warmup_epochs'] * num_batch), 1000)
-    with open(output_path + 'step.csv', 'w') as f:
+    with open(output_path + '/step.csv', 'w') as f:
         if args.local_rank == 0:
             writer = csv.DictWriter(f, fieldnames=['epoch', 'train mAP@50', 'train mAP', 'val mAP@50', 'val mAP'])
             writer.writeheader()
         for epoch in range(args.epochs):
-            print("Epoch: ", epoch)
+            if args.local_rank == 0:
+                print("Training Epoch: ", epoch)
             model.train()
 
             if args.epochs - epoch == 10:
@@ -130,8 +129,8 @@ def train(
             if args.world_size > 1:
                 sampler.set_epoch(epoch)
             p_bar = enumerate(loader)
-            if args.local_rank == 0:
-                print(('\n' + '%10s' * 3) % ('epoch', 'memory', 'loss'))
+            #if args.local_rank == 0:
+            #    print(('\n' + '%10s' * 3) % ('epoch', 'memory', 'loss'))
             # if args.local_rank == 0:
             #    p_bar = tqdm.tqdm(p_bar, total=num_batch, mininterval=300)  # progress bar
 
@@ -181,10 +180,10 @@ def train(
                         ema.update(model)
 
                 # Log
-                if args.local_rank == 0:
-                    memory = f'{torch.cuda.memory_reserved() / 1E9:.3g}G'  # (GB)
-                    s = ('%10s' * 2 + '%10.4g') % (f'{epoch + 1}/{args.epochs}', memory, m_loss.avg)
-                    #p_bar.set_description(s)
+                #if args.local_rank == 0:
+                #    memory = f'{torch.cuda.memory_reserved() / 1E9:.3g}G'  # (GB)
+                #    s = ('%10s' * 2 + '%10.4g') % (f'{epoch + 1}/{args.epochs}', memory, m_loss.avg)
+                #    #p_bar.set_description(s)
 
                 del loss
                 del outputs
@@ -193,28 +192,27 @@ def train(
             scheduler.step()
 
             if args.local_rank >= 0:
-                model_copy = copy.deepcopy(model).eval()
                 # mAP
                 train_last = test(
                     args,
                     params,
-                    model_copy, #ema.ema,
                     data_root=data_root,
                     annotations_file_path=annotations_file_path,
                     labels_path=labels_path,
                     output_path=output_path,
                     images_save_dir=train_images_save_dir,
+                    model=ema.ema,
                 )
 
                 val_last = test(
                     args,
                     params,
-                    model_copy, #ema.ema,
                     data_root=data_root,
                     annotations_file_path=val_annotations_file_path,
                     labels_path=val_labels_path,
                     output_path=output_path,
                     images_save_dir=val_images_save_dir,
+                    model=ema.ema,
                 )
 
                 train_last_tensor = torch.tensor(train_last).cuda()
@@ -237,42 +235,44 @@ def train(
                         best = val_last[1]
 
                     # Save model
-                    #ckpt = {'model': copy.deepcopy(ema.ema).half()}
-                    ckpt = {'model': copy.deepcopy(model).half()}
+                    ckpt = {'model': copy.deepcopy(ema.ema).half()}
 
                     # Save last, best and delete
-                    torch.save(ckpt, output_path + 'last.pt')
+                    torch.save(ckpt, output_path + '/last.pt')
+
                     if best == val_last[1]:
-                        torch.save(ckpt, output_path + 'best.pt')
+                        torch.save(ckpt, output_path + '/best.pt')
                     del ckpt
 
                     plot_learning_curves.plot_mAP(output_path, 'step.csv', args.epochs)
 
 
     if args.local_rank == 0:
-        util.strip_optimizer(output_path + 'best.pt')  # strip optimizers
-        util.strip_optimizer(output_path + 'last.pt')  # strip optimizers
+        util.strip_optimizer(output_path + '/best.pt')  # strip optimizers
+        util.strip_optimizer(output_path + '/last.pt')  # strip optimizers
 
     torch.cuda.empty_cache()
+    torch.distributed.barrier()
+
 
 
 @torch.no_grad()
 def test(
     args,
     params,
+    data_root,
+    annotations_file_path,
+    labels_path,
+    output_path,
+    images_save_dir,
     model=None,
-    data_root="/home/asaridena/yolo-v8/v1.0-mini/",
-    annotations_file_path="/home/asaridena/yolo-v8/v1.0-mini/v1.0-mini/image_annotations_boston_val_p1.csv",
-    labels_path="/home/asaridena/yolo-v8/v1.0-mini/samples/boston_val_p1_labels.cache",
-    output_path="/home/asaridena/yolo-v8/YOLOv8-pt/weights/",
-    images_save_dir="/home/asaridena/yolo-v8/YOLOv8-pt/weights/test-images/",
 ):
 
     filenames = []
     with open(annotations_file_path, 'r') as file:
         csv_reader = csv.DictReader(file)
         for row in csv_reader:
-            filenames.append(data_root + row['filename'])
+            filenames.append(os.path.join(data_root, row['filename']))
 
     dataset = Dataset(filenames, labels_path, data_root, images_save_dir, args.input_size, params, False)
 
@@ -281,23 +281,11 @@ def test(
     else:
         sampler = data.distributed.DistributedSampler(dataset)
 
-    loader = data.DataLoader(dataset, args.batch_size, sampler is None, sampler,
+    loader = data.DataLoader(dataset, 16, sampler is None, sampler,
                              num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn)
 
-    """
-    loader = data.DataLoader(dataset, 32, False, num_workers=12,
-                             pin_memory=True, collate_fn=Dataset.collate_fn)
-    """
-    if model is None and args.local_rank ==0:
-        model = torch.load(output_path + 'best.pt', map_location='cuda')['model'].float()
-    
-    #if args.world_size > 1:
-    #    # DDP mode
-    #    #print("HERE01")
-    #    #model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    #    #model = torch.nn.parallel.DistributedDataParallel(module=model,
-    #    #                                                  device_ids=[args.local_rank],
-    #    #                                                  output_device=args.local_rank)
+    if model is None:
+        model = torch.load(output_path + '/best.pt', map_location='cuda')['model'].float()
 
     model.half()
     model.eval()
@@ -312,10 +300,8 @@ def test(
     mean_ap = 0.
     metrics = []
     p_bar = enumerate(loader)
-    print("Testing")
-    #print("Rank: ", torch.distributed.get_rank(group=None))
-    #p_bar = tqdm.tqdm(loader, desc=('%10s' * 3) % ('precision', 'recall', 'mAP'), mininterval=300)
-    #for k, (samples, targets, shapes) in enumerate(p_bar):
+    if args.local_rank == 0:
+        print("Validation")
     for k, (samples, targets, shapes) in p_bar:
         samples = samples.cuda()
         targets = targets.cuda()
@@ -401,10 +387,11 @@ def main():
     parser.add_argument('--local-rank', default=0, type=int)
     parser.add_argument('--epochs', default=50, type=int)
     parser.add_argument('--city', type=str)
-    parser.add_argument('--dataset_name', type=str)
-    parser.add_argument('--input_path', type=str)
-    parser.add_argument('--output_path', type=str)
+    parser.add_argument('--dataset-name', type=str)
+    parser.add_argument('--input-path', type=str)
+    parser.add_argument('--output-path', type=str)
     
+    parser.add_argument('--load-labels', action='store_true')
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', action='store_true')
 
@@ -412,19 +399,14 @@ def main():
 
     args.local_rank = int(os.getenv('LOCAL_RANK', 0))
     args.world_size = int(os.getenv('WORLD_SIZE', 1))
-
-    os.environ['TQDM_POSITION'] = '-1'
  
     if args.world_size > 1:
         torch.cuda.set_device(device=args.local_rank)
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
-    input_path =  args.input_path + "/"
-    output_path =  args.output_path + "/weights/"
-
     if args.local_rank == 0:
-        if not os.path.exists(output_path):
-            os.makedirs(output_path)
+        if not os.path.exists(args.output_path):
+            os.makedirs(args.output_path)
 
     util.setup_seed()
     util.setup_multi_processes()
@@ -432,35 +414,44 @@ def main():
     with open(os.path.join('utils', 'nuScenes_args.yaml'), errors='ignore') as f:
         params = yaml.safe_load(f)
 
-    city = args.city #"boston"
-    dataset_name = args.dataset_name #"v1.0-trainval"
-    data_home= input_path + dataset_name + "/"
+    data_root = os.path.join(args.input_path, args.dataset_name)
+
+    train_annotations_file_path = os.path.join(data_root, args.dataset_name, f"no_dups_image_annotations_{args.city}_train_p9.csv")
+    val_annotations_file_path = os.path.join(data_root, args.dataset_name, f"no_dups_image_annotations_{args.city}_val_p1.csv")
+
+    if args.load_labels:
+        train_labels_path = os.path.join(args.input_path, f"train-labels/weights/no_dups_{args.city}_train_p9_labels.cache")
+        val_labels_path = os.path.join(args.input_path, f"train-labels/weights/no_dups_{args.city}_val_p1_labels.cache")
+    else:
+        train_labels_path = os.path.join(args.output_path, f"no_dups_{args.city}_train_p9_labels.cache")
+        val_labels_path = os.path.join(args.output_path, f"no_dups_{args.city}_val_p1_labels.cache")
+
+    train_images_save_dir = os.path.join(args.output_path, "train_images")
+    val_images_save_dir = os.path.join(args.output_path, "val_images")
+    test_images_save_dir = os.path.join(args.output_path, "test_images")
 
     if args.train:
         train(
             args,
             params,
-            data_root=data_home,
-            annotations_file_path=data_home+dataset_name+"/no_dups_image_annotations_"+city+"_train_p9.csv",
-            labels_path=input_path+"train-labels/weights/no_dups_"+city+"_train_p9_labels.cache",
-            #labels_path=output_path+"no_dups_"+city+"_train_p9_labels.cache",
-            val_annotations_file_path=data_home+dataset_name+"/no_dups_image_annotations_"+city+"_val_p1.csv",
-            val_labels_path=input_path+"val-labels/weights/no_dups_"+city+"_val_p1_labels.cache",
-            #val_labels_path=output_path+"no_dups_"+city+"_val_p1_labels.cache",
-            output_path=output_path,
-            train_images_save_dir=output_path+"train-images/",
-            val_images_save_dir=output_path+"val-images/",
+            data_root=data_root,
+            annotations_file_path=train_annotations_file_path,
+            labels_path=train_labels_path,
+            val_annotations_file_path=val_annotations_file_path,
+            val_labels_path=val_labels_path,
+            output_path=args.output_path,
+            train_images_save_dir=train_images_save_dir,
+            val_images_save_dir=val_images_save_dir,
         )
     if args.test:
         test(
             args,
             params,
-            data_root=data_home,
-            annotations_file_path=data_home+dataset_name+"/no_dups_image_annotations_"+city+"_val_p1.csv",
-            labels_path=input_path+"val-labels/weights/no_dups_"+city+"_val_p1_labels.cache",
-            #labels_path=output_path+"no_dups_"+city+"_val_p1_labels.cache",
-            output_path=output_path,
-            images_save_dir=output_path+"test-images/",
+            data_root=data_root,
+            annotations_file_path=val_annotations_file_path,
+            labels_path=val_labels_path,
+            output_path=args.output_path,
+            images_save_dir=test_images_save_dir,
         )
 
 
